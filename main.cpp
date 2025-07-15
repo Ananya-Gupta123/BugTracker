@@ -1,197 +1,214 @@
-// #include <iostream>
-// #include <vector>
-// #include <string>
-// #include <fstream>
-// #include <ctime>
-#include<bits/stdc++.h>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <ctime>
+#include <iomanip>
+#include<conio.h>
+
+#include "mysql_connection.h"
+#include <cppconn/driver.h>
+#include <cppconn/exception.h>
+#include <cppconn/prepared_statement.h>
+#include <cppconn/resultset.h>
+#include <cppconn/statement.h>
+
 using namespace std;
 
-class User {
-public:
-    string username;
-    string password;
+const string server = "tcp://127.0.0.1:3306";
+const string username = "root";
+const string password = "#Ananya_gupta123";
+const string dbname = "bugtrackerdb";
 
-    User(string uname, string pword) {
-        username = uname;
-        password = pword;
+class Database {
+public:
+    sql::Driver* driver = nullptr;
+    sql::Connection* con = nullptr;
+
+    Database() {
+        driver = get_driver_instance();
+        con = driver->connect(server, username, password);
+        initialize();
+    }
+
+    void initialize() {
+        sql::Statement* stmt = con->createStatement();
+        stmt->execute("CREATE DATABASE IF NOT EXISTS " + dbname);
+        con->setSchema(dbname);
+
+        stmt->execute("CREATE TABLE IF NOT EXISTS users (username VARCHAR(50) PRIMARY KEY, password VARCHAR(50))");
+
+        stmt->execute("CREATE TABLE IF NOT EXISTS bugs ("
+            "id INT AUTO_INCREMENT PRIMARY KEY,"
+            "description TEXT,"
+            "status VARCHAR(10),"
+            "timestamp VARCHAR(100))");
+
+        delete stmt;
+    }
+
+    ~Database() {
+        delete con;
     }
 };
 
 class UserManager {
-private:
-    vector<User> users;
-    string userFile = "users.txt";
-
-    void loadUsers() {
-        ifstream file(userFile);
-        if (file.is_open()) {
-            string uname, pword;
-            while (file >> uname >> pword) {
-                users.push_back(User(uname, pword));
-            }
-            file.close();
-        }
-    }
-
-    void saveUsers() {
-        ofstream file(userFile);
-        if (file.is_open()) {
-            for (User &user : users) {
-                file << user.username << " " << user.password << "\n";
-            }
-            file.close();
-        }
-    }
+    Database* db;
 
 public:
-    UserManager() {
-        loadUsers();
+    UserManager(Database* database) : db(database) {}
+
+    bool login(const string& uname, const string& pword) {
+        sql::PreparedStatement* pstmt = db->con->prepareStatement(
+            "SELECT * FROM users WHERE username=? AND password=?"
+        );
+        pstmt->setString(1, uname);
+        pstmt->setString(2, pword);
+        sql::ResultSet* res = pstmt->executeQuery();
+        bool success = res->next();
+        delete res;
+        delete pstmt;
+        return success;
     }
 
-    bool login(string uname, string pword) {
-        for (User &user : users) {
-            if (user.username == uname && user.password == pword) {
-                return true;
-            }
+    bool signUp(const string& uname, const string& pword) {
+        // Check if username exists
+        sql::PreparedStatement* checkStmt = db->con->prepareStatement(
+            "SELECT * FROM users WHERE username=?"
+        );
+        checkStmt->setString(1, uname);
+        sql::ResultSet* res = checkStmt->executeQuery();
+        if (res->next()) {
+            delete res;
+            delete checkStmt;
+            return false; // Username already exists
         }
-        return false;
-    }
+        delete res;
+        delete checkStmt;
 
-    bool signUp(string uname, string pword) {
-        for (User &user : users) {
-            if (user.username == uname) {
-                return false; // Username already exists
-            }
-        }
-        users.push_back(User(uname, pword));
-        saveUsers();
+        sql::PreparedStatement* pstmt = db->con->prepareStatement(
+            "INSERT INTO users(username, password) VALUES(?, ?)"
+        );
+        pstmt->setString(1, uname);
+        pstmt->setString(2, pword);
+        pstmt->execute();
+        delete pstmt;
         return true;
     }
 };
 
-class Bug {
-public:
-    int id;
-    string description;
-    string status; // "Open" or "Fixed"
-    string timestamp;
-
-    Bug(int bugId, string desc, string time) {
-        id = bugId;
-        description = desc;
-        status = "Open";
-        timestamp = time;
-    }
-};
-
 class BugTracker {
-private:
-    vector<Bug> bugs;
-    int nextId;
+    Database* db;
 
     string getCurrentTime() {
-        time_t now = time(0);
-        char* dt = ctime(&now);
-        string timeStr(dt);
-        timeStr.pop_back(); // Remove newline character
+        time_t now = time(nullptr);
+        char buf[100];
+        ctime_s(buf, sizeof(buf), &now);
+        string timeStr(buf);
+        timeStr.pop_back();
         return timeStr;
     }
 
-public:
-    BugTracker() {
-        nextId = 1;
-        loadFromFile();
-    }
 
-    void addBug(string desc) {
-        string time = getCurrentTime();
-        Bug newBug(nextId, desc, time);
-        bugs.push_back(newBug);
-        nextId++;
-        saveToFile();
+public:
+    BugTracker(Database* database) : db(database) {}
+
+    void addBug(const string& desc) {
+        sql::PreparedStatement* pstmt = db->con->prepareStatement(
+            "INSERT INTO bugs(description, status, timestamp) VALUES (?, 'Open', ?)"
+        );
+        pstmt->setString(1, desc);
+        pstmt->setString(2, getCurrentTime());
+        pstmt->execute();
+        delete pstmt;
         cout << "Bug added successfully!\n";
     }
 
     void viewBugs() {
-        if (bugs.empty()) {
+        sql::Statement* stmt = db->con->createStatement();
+        sql::ResultSet* res = stmt->executeQuery("SELECT * FROM bugs");
+
+        if (!res->next()) {
             cout << "No bugs reported.\n";
-            return;
         }
-        for (size_t i = 0; i < bugs.size(); i++) {
-            cout << "ID: " << bugs[i].id << ", Description: " << bugs[i].description
-                 << ", Status: " << bugs[i].status << ", Reported on: " << bugs[i].timestamp << "\n";
+        else {
+            res->beforeFirst();
+            while (res->next()) {
+                cout << "ID: " << res->getInt("id") << endl;
+                cout << "Description: " << res->getString("description") << endl;
+                cout << "Status: " << res->getString("status") << endl;
+                cout << "Reported on: " << res->getString("timestamp") << "\n";
+            }
         }
+
+        delete res;
+        delete stmt;
     }
+
 
     void markBugFixed(int bugId) {
-        for (size_t i = 0; i < bugs.size(); i++) {
-            if (bugs[i].id == bugId) {
-                bugs[i].status = "Fixed";
-                saveToFile();
-                cout << "Bug marked as fixed!\n";
-                return;
-            }
-        }
-        cout << "Bug ID not found.\n";
-    }
+        sql::PreparedStatement* pstmt = db->con->prepareStatement(
+            "UPDATE bugs SET status='Fixed' WHERE id=?"
+        );
+        pstmt->setInt(1, bugId);
+        int updated = pstmt->executeUpdate();
+        delete pstmt;
 
-    void saveToFile() {
-        ofstream file("bugs.txt");
-        if (file.is_open()) {
-            for (size_t i = 0; i < bugs.size(); i++) {
-                file << bugs[i].id << "|" << bugs[i].description << "|" << bugs[i].status << "|" << bugs[i].timestamp << "\n";
-            }
-            file.close();
-        }
-    }
-
-    void loadFromFile() {
-        ifstream file("bugs.txt");
-        if (file.is_open()) {
-            int id;
-            string desc, status, time;
-            while (file >> id) {
-                file.ignore();
-                getline(file, desc, '|');
-                getline(file, status, '|');
-                getline(file, time);
-                Bug bug(id, desc, time);
-                bug.status = status;
-                bugs.push_back(bug);
-                if (id >= nextId) {
-                    nextId = id + 1;
-                }
-            }
-            file.close();
-        }
+        if (updated)
+            cout << "Bug marked as fixed!\n";
+        else
+            cout << "Bug ID not found.\n";
     }
 };
 
+
+string getHiddenPassword() {
+    string password;
+    char ch;
+    while ((ch = _getch()) != '\r') {  // '\r' is Enter key
+        if (ch == '\b') {  // Handle backspace
+            if (!password.empty()) {
+                cout << "\b \b";
+                password.pop_back();
+            }
+        }
+        else {
+            password.push_back(ch);
+            cout << '*';
+        }
+    }
+    cout << endl;
+    return password;
+}
+
+
 int main() {
-    UserManager userManager;
+    Database db;
+    UserManager userManager(&db);
     string uname, pword;
     int choice;
-    system("cls");
-    cout<< "___________________________________\n";
-    cout<< "|                                  |\n";
-    cout <<"|  1. Login                        | \n";
-    cout <<"|  2. Sign Up                      |\n";
-    cout<< "|__________________________________|";
-    cout<< "\n\n";
 
-    cout <<" Enter choice :  ";
+    system("cls");
+    cout << "___________________________________\n";
+    cout << "|                                  |\n";
+    cout << "|  1. Login                        |\n";
+    cout << "|  2. Sign Up                      |\n";
+    cout << "|__________________________________|\n\n";
+
+    cout << "Enter choice: ";
     cin >> choice;
     cin.ignore();
+
     if (choice == 1) {
         cout << "Enter username: ";
         cin >> uname;
         cout << "Enter password: ";
-        cin >> pword;
+        pword = getHiddenPassword();
         if (!userManager.login(uname, pword)) {
             cout << "Invalid credentials!\n";
             return 0;
         }
-    } else if (choice == 2) {
+    }
+    else if (choice == 2) {
         cout << "Enter username: ";
         cin >> uname;
         cout << "Enter password: ";
@@ -201,33 +218,50 @@ int main() {
             return 0;
         }
         cout << "Account created successfully!\n";
-    } else {
+    }
+    else {
         cout << "Invalid choice!\n";
         return 0;
     }
 
-    BugTracker tracker;
+    BugTracker tracker(&db);
     while (true) {
-        cout << "1. Add Bug\n2. View Bugs\n3. Mark Bug as Fixed\n4. Exit\nEnter choice: ";
+        //system("cls");  // Clear screen at the start of each loop
+        cout << "\n===== Bug Tracker Menu =====\n";
+        cout << "1. Add Bug\n2. View Bugs\n3. Mark Bug as Fixed\n4. Exit\n";
+        cout << "Enter choice: ";
         cin >> choice;
         cin.ignore();
+
         if (choice == 1) {
+            system("cls");
             string desc;
             cout << "Enter bug description: ";
             getline(cin, desc);
             tracker.addBug(desc);
-        } else if (choice == 2) {
+        }
+        else if (choice == 2) {
+            system("cls");
             tracker.viewBugs();
-        } else if (choice == 3) {
+        }
+        else if (choice == 3) {
+            system("cls");
             int bugId;
             cout << "Enter bug ID to mark as fixed: ";
             cin >> bugId;
             tracker.markBugFixed(bugId);
-        } else if (choice == 4) {
+        }
+        else if (choice == 4) {
             break;
-        } else {
+        }
+        else {
             cout << "Invalid choice. Try again.\n";
         }
+
+        cout << "\nPress Enter to return to menu...";
+        cin.ignore();  // Wait for Enter key
     }
+
+
     return 0;
 }
